@@ -1,7 +1,7 @@
 ---
 name: doctorfc
-description: Turn a file, URL, repo link or local directory into one self-contained HTML walkthrough that reads like an RFC: sticky sidebar with nested links, a big-picture ASCII diagram, each module as problem, ASCII flow, plain-word steps and an analogy, plus a names table, a code map for repos and directories, and a "Not covered" box. Use when the user invokes /doctorfc or asks to document, explain or break down a codebase, docs site, paper or tool in this style.
-argument-hint: <file | url | repo url | directory> [overview|deep] [focus]
+description: 'Turn a file, URL, repo link or local directory into one self-contained HTML walkthrough that reads like an RFC: sticky sidebar with nested links, a big-picture ASCII diagram, each module as problem, ASCII flow, plain-word steps and an analogy, plus a names table, a code map for repos and directories, and a "Not covered" box. Use when the user invokes /doctorfc or asks to document, explain or break down a codebase, docs site, paper or tool in this style.'
+argument-hint: '<file | url | repo url | directory> [overview|deep] [focus]'
 ---
 
 # doctorfc
