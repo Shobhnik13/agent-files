@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DNS Walkthrough</title>
+<style>
+:root{--bg:#fafaf7;--panel:#fff;--ink:#1b1e24;--muted:#5d6573;--line:#dfe2e6;--accent:#1769c2;--code:#f4f5f2;--warn:#a86a00}
+@media (prefers-color-scheme: dark){:root{--bg:#0f1115;--panel:#161a21;--ink:#e6e8ec;--muted:#9aa3b2;--line:#2a303b;--accent:#7cc4ff;--code:#0b0d11;--warn:#ffcf6b}}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:grid;grid-template-columns:260px minmax(0,1fr);max-width:1260px;margin:0 auto}
+nav.side{position:sticky;top:0;height:100vh;overflow:auto;padding:24px 14px;border-right:1px solid var(--line)}
+nav.side a{display:block;text-decoration:none;color:var(--muted);border-radius:6px;padding:4px 8px}
+nav.side a:hover{background:var(--code);color:var(--ink)}
+nav.side a.top{font-weight:600;color:var(--ink);margin-top:10px;font-size:14px}
+nav.side a.sub{padding-left:20px;font-size:13px}
+main{max-width:940px;padding:32px 16px 100px;min-width:0}
+h1{font-size:32px;margin:0 0 8px}
+.lede{color:var(--muted);margin:0 0 12px}
+h2{font-size:25px;margin:56px 0 10px;padding-top:14px;border-top:2px solid var(--line)}
+h3{font-size:18px;margin:28px 0 6px;color:var(--accent)}
+h2,h3{scroll-margin-top:12px}
+pre{font:13.5px/1.5 ui-monospace,Menlo,Consolas,monospace;background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto}
+code{font:13px ui-monospace,Menlo,Consolas,monospace;background:var(--code);padding:1px 5px;border-radius:4px}
+ul,ol{padding-left:22px}li{margin:4px 0}
+.note{border-left:4px solid var(--accent);background:var(--panel);padding:10px 16px;border-radius:0 8px 8px 0;margin:14px 0}
+.warn{border-left:4px solid var(--warn);background:var(--panel);padding:10px 16px;border-radius:0 8px 8px 0;margin:14px 0}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}
+th,td{border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+.tbl{overflow-x:auto}
+.toc{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 20px;margin-top:12px}
+.toc a{color:var(--accent);text-decoration:none}
+@media (max-width:900px){.wrap{grid-template-columns:1fr}nav.side{display:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="side">
+<a class="top" href="#big">The big picture</a>
+<a class="top" href="#names">Names</a>
+<a class="top" href="#m1">1. Stub resolver</a>
+<a class="sub" href="#m1-problem">What problem it solves</a>
+<a class="sub" href="#m1-flow">Flow</a>
+<a class="sub" href="#m1-steps">Steps in plain words</a>
+<a class="top" href="#m2">2. Recursive resolver</a>
+<a class="sub" href="#m2-problem">What problem it solves</a>
+<a class="sub" href="#m2-flow">Flow</a>
+<a class="sub" href="#m2-steps">Steps in plain words</a>
+<a class="sub" href="#m2-cache">Caching</a>
+<a class="top" href="#m3">3. Authoritative servers</a>
+<a class="sub" href="#m3-problem">What problem it solves</a>
+<a class="sub" href="#m3-tree">The tree of names</a>
+<a class="sub" href="#m3-records">Record types</a>
+<a class="top" href="#recap">How it all connects</a>
+<a class="top" href="#codemap">Code map</a>
+<a class="sub" href="#codemap-tree">Folder tree</a>
+<a class="sub" href="#codemap-modules">Module to code</a>
+<a class="sub" href="#codemap-start">Where to start reading</a>
+<a class="top" href="#notcovered">Not covered</a>
+</nav>
+<main>
+<h1>DNS, part by part</h1>
+<p class="lede">How a name like www.example.com becomes an address a computer can connect to. Structure and flow, not code.</p>
+<p class="lede"><b>Source:</b> repo <code>example/tiny-resolver</code> (made up for this template) &nbsp; <b>Depth:</b> deep &nbsp; <b>Code map:</b> included at the end</p>
+
+<div class="toc">
+<b>Modules</b>
+<ol>
+<li><a href="#m1">Stub resolver</a></li>
+<li><a href="#m2">Recursive resolver</a></li>
+<li><a href="#m3">Authoritative servers</a></li>
+</ol>
+<b>Reference</b>
+<ul>
+<li><a href="#names">Names: everyday words vs spec terms</a></li>
+<li><a href="#codemap">Code map</a></li>
+<li><a href="#notcovered">Not covered</a></li>
+</ul>
+</div>
+
+<h2 id="big">The big picture</h2>
+<pre>
+ YOUR LAPTOP                    YOUR ISP / 1.1.1.1 / 8.8.8.8          THE INTERNET'S NAME SERVERS
+ +----------------+             +-------------------------+
+ | browser        |             | [2] RECURSIVE RESOLVER  | ---&gt; root servers      (who runs .com?)
+ |   |            |  question   |   cache                 | ---&gt; .com servers      (who runs example.com?)
+ | [1] STUB       | ----------&gt; |   asks around for you   | ---&gt; example.com's     (what is www?)
+ |   RESOLVER     | &lt;---------- |                         |      [3] AUTHORITATIVE
+ +----------------+   answer    +-------------------------+          SERVERS
+</pre>
+<ul>
+<li><b>1</b> lives on your machine and only asks one question.</li>
+<li><b>2</b> does the legwork: walks the chain of servers and remembers answers.</li>
+<li><b>3</b> are the owners of each part of the name. They hold the real answers.</li>
+</ul>
+<div class="note">Analogy: you ask the hotel front desk (stub) for a restaurant's phone number. The concierge (recursive resolver) calls the city directory, then the district office, then the restaurant itself (authoritative), and writes the number in a notebook so the next guest gets it instantly.</div>
+
+<h2 id="names">Names: everyday words vs spec terms</h2>
+<p>People and the specs use different words for the same things. This page uses the spec's words.</p>
+<div class="tbl"><table>
+<tr><th>What people say</th><th>What the spec calls it</th><th>What it is</th></tr>
+<tr><td>"My DNS server" (1.1.1.1, 8.8.8.8)</td><td>recursive resolver</td><td>The server that looks names up for you (module 2)</td></tr>
+<tr><td>"Flush DNS"</td><td>clearing the stub's cache</td><td>Forgetting answers kept on your machine (module 1)</td></tr>
+<tr><td>"My domain's DNS settings"</td><td>records in a zone</td><td>What the owner's servers answer with (module 3)</td></tr>
+<tr><td>"Nameservers" at the registrar</td><td>NS records, delegation</td><td>Which servers own a domain (module 3)</td></tr>
+<tr><td>"DNS propagation"</td><td>caches expiring after TTL</td><td>Old answers living on until they time out (module 2)</td></tr>
+</table></div>
+
+<!-- ============================================================ -->
+<h2 id="m1">1. Stub resolver</h2>
+
+<h3 id="m1-problem">What problem it solves</h3>
+<ul>
+<li>Every program needs names turned into addresses. None of them should have to know how DNS works.</li>
+<li>The stub is a small part of the operating system that takes the question and hands it to one configured server.</li>
+</ul>
+
+<h3 id="m1-flow">Flow</h3>
+<pre>
+ browser: "www.example.com?"
+    |
+    v
+ [1] HOSTS FILE      local overrides, checked first
+    |  not found
+    v
+ [2] LOCAL CACHE     answers seen recently on this machine
+    |  not found
+    v
+ [3] ASK ONE SERVER  the configured recursive resolver
+    |
+    v
+ answer: an address, or "no such name"
+</pre>
+
+<h3 id="m1-steps">Steps in plain words</h3>
+<ul>
+<li><b>Hosts file:</b> a plain text list on the machine. If the name is there, DNS is never asked.</li>
+<li><b>Cache:</b> recent answers are kept for as long as each answer says it may be kept.</li>
+<li><b>One question out:</b> the stub does not walk the chain itself. It asks for a full answer and waits.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="m2">2. Recursive resolver</h2>
+
+<h3 id="m2-problem">What problem it solves</h3>
+<ul>
+<li>No single server knows every name. The answer is spread over many owners.</li>
+<li>The recursive resolver finds the right owner by asking from the top down, then hands back one final answer.</li>
+</ul>
+
+<h3 id="m2-flow">Flow</h3>
+<pre>
+ question: www.example.com
+    |
+    v
+ [1] CACHE?                       have it and not expired -&gt; answer now
+    |  no
+    v
+ [2] ASK A ROOT SERVER            "I don't know www.example.com,
+    |                              but .com is run by these servers"
+    v
+ [3] ASK A .com SERVER            "example.com is run by these servers"
+    |
+    v
+ [4] ASK example.com's SERVER     "www.example.com = this address"
+    |
+    v
+ [5] STORE IN CACHE (for TTL seconds) -&gt; answer the stub
+</pre>
+
+<h3 id="m2-steps">Steps in plain words</h3>
+<ul>
+<li><b>Start at the top:</b> the resolver ships with the addresses of the root servers built in.</li>
+<li><b>Each answer is a referral:</b> "not me, ask them". The resolver follows referrals until it reaches the owner.</li>
+<li><b>Final answer:</b> the owner's server answers with the record itself.</li>
+</ul>
+
+<h3 id="m2-cache">Caching</h3>
+<div class="tbl"><table>
+<tr><th>What is cached</th><th>For how long</th><th>Effect</th></tr>
+<tr><td>Final answers</td><td>The record's TTL, set by the owner</td><td>Repeat questions answered instantly</td></tr>
+<tr><td>Referrals (who runs .com)</td><td>Their own TTL</td><td>Most lookups skip the root entirely</td></tr>
+<tr><td>"No such name"</td><td>A time the owner sets</td><td>Typos don't hammer the servers</td></tr>
+</table></div>
+<div class="warn">The trade-off: a long TTL means fast answers but slow changes. If the owner changes an address, old answers live on in caches until they expire.</div>
+
+<!-- ============================================================ -->
+<h2 id="m3">3. Authoritative servers</h2>
+
+<h3 id="m3-problem">What problem it solves</h3>
+<ul>
+<li>Someone has to be the source of truth for each name.</li>
+<li>Each owner runs (or rents) servers that answer only for their own part of the tree.</li>
+</ul>
+
+<h3 id="m3-tree">The tree of names</h3>
+<pre>
+                    . (root)
+                    |
+      +-------------+-------------+
+      |             |             |
+     com           org           net        &lt;- top-level domains
+      |
+   example                                  &lt;- owned by someone
+      |
+   +--+--+
+   |     |
+  www   mail                                &lt;- records inside example.com
+</pre>
+<ul>
+<li>A name is read right to left: root, then <code>com</code>, then <code>example</code>, then <code>www</code>.</li>
+<li>Each level only knows who runs the level below it. That handing-down is called delegation.</li>
+</ul>
+
+<h3 id="m3-records">Record types</h3>
+<div class="tbl"><table>
+<tr><th>Type</th><th>Holds</th><th>Example</th></tr>
+<tr><td>A</td><td>An IPv4 address</td><td><code>www -&gt; 192.0.2.10</code></td></tr>
+<tr><td>AAAA</td><td>An IPv6 address</td><td><code>www -&gt; 2001:db8::10</code></td></tr>
+<tr><td>CNAME</td><td>"This name is another name"</td><td><code>shop -&gt; www.example.com</code></td></tr>
+<tr><td>MX</td><td>Which server takes mail</td><td><code>example.com -&gt; mail.example.com</code></td></tr>
+<tr><td>NS</td><td>Which servers own a zone</td><td><code>example.com -&gt; ns1.example.net</code></td></tr>
+</table></div>
+
+<h2 id="recap">How it all connects</h2>
+<pre>
+ app asks stub [1]
+   -&gt; stub asks recursive resolver [2]
+        -&gt; cache hit? answer
+        -&gt; else root -&gt; TLD -&gt; owner [3], following referrals
+        -&gt; cache the answer for its TTL
+   -&gt; stub caches it too, hands it to the app
+   -&gt; app connects to the address
+</pre>
+
+<!-- ============================================================ -->
+<h2 id="codemap">Code map</h2>
+<p>Where each module lives, for when you want to read the code. Everything above is readable without this.</p>
+<div class="warn">Template note: <code>example/tiny-resolver</code> does not exist. It is made up to show the format of this section.</div>
+
+<h3 id="codemap-tree">Folder tree</h3>
+<pre>
+ tiny-resolver/
+ +-- cmd/
+ |   +-- resolve/main.go          CLI entry: "resolve www.example.com"     [1]
+ |   +-- serve/main.go            server entry: listens on port 53          [2]
+ +-- stub/                        module 1
+ |   +-- hosts.go                 read the hosts file
+ |   +-- client.go                send one question, wait for the answer
+ +-- recursive/                   module 2
+ |   +-- walk.go                  root -&gt; TLD -&gt; owner, following referrals
+ |   +-- cache.go                 answers and referrals, expired by TTL
+ |   +-- roots.go                 built-in root server addresses
+ +-- authoritative/               module 3
+ |   +-- zone.go                  load a zone file
+ |   +-- answer.go                answer for owned names, refer the rest
+ +-- wire/                        shared: message encode / decode
+ +-- testdata/                    sample zones
+</pre>
+
+<h3 id="codemap-modules">Module to code</h3>
+<div class="tbl"><table>
+<tr><th>Module</th><th>Folder</th><th>Entry point</th><th>Main pieces</th></tr>
+<tr><td>1. Stub resolver</td><td><code>stub/</code></td><td><code>cmd/resolve/main.go</code></td><td><code>hosts.go</code> overrides, <code>client.go</code> one question out</td></tr>
+<tr><td>2. Recursive resolver</td><td><code>recursive/</code></td><td><code>cmd/serve/main.go</code></td><td><code>walk.go</code> referral chain, <code>cache.go</code> TTL cache, <code>roots.go</code></td></tr>
+<tr><td>3. Authoritative servers</td><td><code>authoritative/</code></td><td><code>cmd/serve/main.go</code> with a zone</td><td><code>zone.go</code> load, <code>answer.go</code> answer or refer</td></tr>
+</table></div>
+
+<h3 id="codemap-start">Where to start reading</h3>
+<ol>
+<li><code>cmd/resolve/main.go</code>: what a single lookup does, start to end.</li>
+<li><code>stub/client.go</code>: the one question the machine sends out.</li>
+<li><code>recursive/walk.go</code>: the referral chain, the heart of DNS.</li>
+<li><code>recursive/cache.go</code>: why most lookups never reach the root.</li>
+<li><code>authoritative/answer.go</code>: how an owner answers or refers.</li>
+</ol>
+
+<h2 id="notcovered">Not covered</h2>
+<div class="warn">
+<ul>
+<li><b>DNSSEC:</b> signing and checking answers.</li>
+<li><b>Encrypted DNS:</b> DNS over HTTPS and DNS over TLS.</li>
+<li><b>Zone transfers</b> between an owner's servers.</li>
+<li><b>Message format details:</b> flags, EDNS, size limits.</li>
+<li><b>How root servers are spread worldwide</b> (anycast).</li>
+</ul>
+</div>
+</main>
+</div>
+</body>
+</html>
